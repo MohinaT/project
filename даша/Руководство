@@ -1,8 +1,8 @@
-### Должно быть открыто 3 программы:
-# main.py
-# database.py
-# excel.py
-# university_reports_demo.db (создастся автоматически)
-### Установить библиотеку py -m pip install fastapi uvicorn openpyxl python-multipart
-### Потом вставить в терминал py -m uvicorn main:app --reload
-### Оте=крыть ссылку http://127.0.0.1:8000 и заполнить поля. 
+Должно быть открыто 3 программы:
+main.py
+database.py
+excel.py
+university_reports_demo.db (создастся автоматически)
+Установить библиотеку py -m pip install fastapi uvicorn openpyxl python-multipart
+Потом вставить в терминал py -m uvicorn main:app --reload
+Открыть ссылку http://127.0.0.1:8000 и заполнить поля. 
