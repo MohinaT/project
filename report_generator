@@ -1,0 +1,191 @@
+import os
+from docxtpl import DocxTemplate
+from database import get_connection
+
+
+def generate_teacher_report(teacher_id: int, template_path: str, output_path: str):
+    if not os.path.exists(template_path):
+        print(f"Ошибка: файл шаблона '{template_path}' не найден.")
+        return
+
+    conn = get_connection()
+
+    try:
+        teacher = conn.execute("""
+            SELECT 
+                t.full_name,
+                t.birth_date,
+                t.degree,
+                t.academic_title,
+                t.years_in_university,
+                p.position_name,
+                d.department_name
+            FROM teachers t
+            JOIN positions p ON t.position_id = p.position_id
+            JOIN departments d ON t.department_id = d.department_id
+            WHERE t.teacher_id = ?
+        """, (teacher_id,)).fetchone()
+
+        if not teacher:
+            print(f"Преподаватель с ID {teacher_id} не найден в базе данных.")
+            return
+
+        year_row = conn.execute("""
+            SELECT academic_year FROM teaching_assignments WHERE teacher_id = ? 
+            UNION 
+            SELECT academic_year FROM workload_hours WHERE teacher_id = ?
+            LIMIT 1
+        """, (teacher_id, teacher_id)).fetchone()
+
+        academic_year = year_row["academic_year"] if year_row else "2025/2026"
+
+        assignments = conn.execute("""
+            SELECT 
+                discipline, 
+                SUM(lecture_hours) as sum_lecture, 
+                SUM(practice_hours) as sum_practice, 
+                SUM(laboratory_hours) as sum_lab,
+                SUM(consultation_hours) as sum_consult, 
+                SUM(exam_hours) as sum_exam, 
+                SUM(coursework_hours) as sum_coursework, 
+                SUM(thesis_hours) as sum_thesis, 
+                SUM(other_hours) as sum_other,
+                SUM(total_hours) as sum_total
+            FROM teaching_assignments
+            WHERE teacher_id = ?
+            GROUP BY discipline
+        """, (teacher_id,)).fetchall()
+
+        section_I = []
+        total_I = 0
+
+        for idx, a in enumerate(assignments, start=1):
+            total_I += a["sum_total"]
+            parts = []
+
+            if a["sum_lecture"] > 0:
+                parts.append(f"лекционные курсы {int(a['sum_lecture'])} ч.")
+            if a["sum_practice"] > 0:
+                parts.append(f"практические занятия и семинары {int(a['sum_practice'])} ч.")
+            if a["sum_lab"] > 0:
+                parts.append(f"лабораторные работы {int(a['sum_lab'])} ч.")
+
+
+            exams_and_consults = a["sum_consult"] + a["sum_exam"]
+            if exams_and_consults > 0:
+                parts.append(f"прием экзаменов, зачетов и консультации {int(exams_and_consults)} ч.")
+
+            if a["sum_coursework"] > 0:
+                parts.append(f"руководство курсовыми работами {int(a['sum_coursework'])} ч.")
+            if a["sum_thesis"] > 0:
+                parts.append(f"руководство ВКР {int(a['sum_thesis'])} ч.")
+            if a["sum_other"] > 0:
+                parts.append(f"прочие виды работ {int(a['sum_other'])} ч.")
+
+            work_desc = ", ".join(parts) if parts else "учебная нагрузка"
+
+
+            line = f"{idx}. {a['discipline']} ({work_desc}, всего: {int(a['sum_total'])} ч.)."
+            section_I.append(line)
+
+
+        workload_records = conn.execute("""
+            SELECT 
+                wt.section,
+                wt.work_name,
+                SUM(wh.hours_sem1 + wh.hours_sem2) as total_hours,
+                wh.comment
+            FROM workload_hours wh
+            JOIN work_types wt ON wh.work_type_id = wt.work_type_id
+            WHERE wh.teacher_id = ?
+            GROUP BY wt.work_name
+        """, (teacher_id,)).fetchall()
+
+        section_II, total_II = [], 0
+        section_III, total_III = [], 0
+        section_IV, total_IV = [], 0
+        section_V, total_V = [], 0
+
+        for r in workload_records:
+            sec = str(r["section"]).upper()
+            hours = r["total_hours"] or 0
+            comment_str = f" ({r['comment']})" if r["comment"] else ""
+            item_text = f"• {r['work_name']}{comment_str} — {int(hours)} ч."
+
+            if "II" in sec or "2" in sec:
+                section_II.append(item_text)
+                total_II += hours
+            elif "III" in sec or "3" in sec:
+                section_III.append(item_text)
+                total_III += hours
+            elif "IV" in sec or "4" in sec:
+                section_IV.append(item_text)
+                total_IV += hours
+            elif "V" in sec or "5" in sec:
+                section_V.append(item_text)
+                total_V += hours
+
+        grand_total = total_I + total_II + total_III + total_IV + total_V
+
+
+        context = {
+            "academic_year_display": academic_year,
+            "period_start": "сентября 2025 г.",
+            "period_end": "июня 2026 г.",
+
+            "full_name": teacher["full_name"],
+            "birth_date": teacher["birth_date"] or "—",
+            "degree": teacher["degree"] or "—",
+            "academic_title": teacher["academic_title"] or "—",
+            "position_name": teacher["position_name"],
+            "years_in_university": teacher["years_in_university"] or "—",
+            "last_re_election_date": "—",
+
+            "section_I": section_I if section_I else ["1. Учебная нагрузка не найдена в базе данных"],
+            "total_I": int(total_I),
+
+            "section_II": section_II if section_II else ["—"],
+            "total_II": int(total_II),
+
+            "section_III": section_III if section_III else ["—"],
+            "total_III": int(total_III),
+
+            "section_IV": section_IV if section_IV else ["—"],
+            "total_IV": int(total_IV),
+
+            "section_V": section_V if section_V else ["—"],
+            "total_V": int(total_V),
+
+            "grand_total": int(grand_total),
+            "report_date": ""
+        }
+
+
+        doc = DocxTemplate(template_path)
+        doc.render(context)
+        doc.save(output_path)
+        print(f"Успех! Сформирован итоговый отчет: {output_path}")
+
+    finally:
+        conn.close()
+
+
+if __name__ == "__main__":
+    conn = get_connection()
+    try:
+
+        res = conn.execute("SELECT teacher_id, full_name FROM teachers ORDER BY teacher_id DESC LIMIT 1").fetchone()
+        if not res:
+            print("В базе данных нет ни одного преподавателя! Сначала заполните форму на сайте.")
+        else:
+            t_id, t_name = res[0], res[1]
+            print(f"Генерация отчета для преподавателя: {t_name} (ID: {t_id})")
+
+            generate_teacher_report(
+                teacher_id=t_id,
+                template_path="Шаблон отчета по ИП_docxtpl.docx",
+                output_path=f"Итоговый_Отчет_{t_id}.docx"
+            )
+            print("Готово! Проверьте папку с проектом - там появился сгенерированный файл отчета.")
+    finally:
+        conn.close()
